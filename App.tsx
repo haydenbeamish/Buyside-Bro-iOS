@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   BackHandler,
   Platform,
+  Pressable,
   StatusBar,
   StyleSheet,
   Text,
@@ -17,9 +18,22 @@ import * as Linking from 'expo-linking';
 import * as SplashScreen from 'expo-splash-screen';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
+import * as Notifications from 'expo-notifications';
 import CookieManager, { type Cookie, type Cookies } from '@preeternal/react-native-cookie-manager';
+import { registerForPushNotifications, unregisterPushNotifications, getDeepLinkUrl } from './notifications';
+import NotificationSettings from './NotificationSettings';
 
 SplashScreen.preventAutoHideAsync();
+
+// Show notifications as banners even when the app is in the foreground
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
 const WEBSITE_URL = 'https://www.buysidebro.com';
 const WEBSITE_ORIGIN = 'buysidebro.com';
@@ -73,6 +87,9 @@ export default function App() {
   const [hasLoaded, setHasLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showWebView, setShowWebView] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const notificationRegistered = useRef(false);
 
   // Biometric initialization — runs once on mount before WebView renders
   useEffect(() => {
@@ -139,12 +156,33 @@ export default function App() {
     return () => handler.remove();
   }, [canGoBack]);
 
+  // Register for push notifications once the user is logged in
+  useEffect(() => {
+    if (!isLoggedIn || notificationRegistered.current) return;
+    notificationRegistered.current = true;
+    registerForPushNotifications();
+  }, [isLoggedIn]);
+
+  // Handle notification taps — deep-link into WebView
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data as Record<string, unknown>;
+      const url = getDeepLinkUrl(data);
+      if (url && webViewRef.current) {
+        const escaped = url.replace(/'/g, "\\'");
+        webViewRef.current.injectJavaScript(`window.location.href='${escaped}'; true;`);
+      }
+    });
+    return () => subscription.remove();
+  }, []);
+
   // Save session cookies to SecureStore if user is logged in
   const saveCookiesIfLoggedIn = useCallback(async () => {
     try {
       const cookies = await CookieManager.get(WEBSITE_URL, true);
 
       if (hasSessionCookie(cookies)) {
+        setIsLoggedIn(true);
         const json = JSON.stringify(cookies);
         // SecureStore has a ~2KB limit on some iOS versions
         if (json.length < 2000) {
@@ -152,6 +190,7 @@ export default function App() {
           await SecureStore.setItemAsync(STORE_BIOMETRIC_KEY, 'true');
         }
       } else {
+        setIsLoggedIn(false);
         // No session cookie — user may have logged out, clear stored session
         const previouslyStored = await SecureStore.getItemAsync(STORE_COOKIES_KEY);
         if (previouslyStored) {
@@ -172,6 +211,9 @@ export default function App() {
     if (url.includes('/logout') || url.includes('/signout') || url.includes('/logged-out')) {
       SecureStore.deleteItemAsync(STORE_COOKIES_KEY);
       SecureStore.deleteItemAsync(STORE_BIOMETRIC_KEY);
+      unregisterPushNotifications();
+      notificationRegistered.current = false;
+      setIsLoggedIn(false);
     }
   }, []);
 
@@ -335,11 +377,24 @@ export default function App() {
             />
           )}
         </SafeAreaView>
+        {isLoggedIn && !isLoading && (
+          <Pressable
+            style={styles.settingsButton}
+            onPress={() => setShowSettings(true)}
+            hitSlop={8}
+          >
+            <Text style={styles.settingsIcon}>&#x2699;</Text>
+          </Pressable>
+        )}
         {(isLoading || !showWebView) && (
           <View style={styles.loadingOverlay}>
             <ActivityIndicator size="large" color="#F97316" />
           </View>
         )}
+        <NotificationSettings
+          visible={showSettings}
+          onClose={() => setShowSettings(false)}
+        />
       </View>
     </SafeAreaProvider>
   );
@@ -396,5 +451,21 @@ const styles = StyleSheet.create({
     color: '#F97316',
     fontSize: 16,
     fontWeight: '600',
+  },
+  settingsButton: {
+    position: 'absolute',
+    top: 56,
+    right: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
+  },
+  settingsIcon: {
+    color: '#F97316',
+    fontSize: 22,
   },
 });
