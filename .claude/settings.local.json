@@ -72,7 +72,16 @@
       "Bash(identify:*)",
       "Bash(file:*)",
       "Bash(git -C /home/runner/workspace add:*)",
-      "Bash(git -C /home/runner/workspace commit -m \"$\\(cat <<''EOF''\nFix SafeArea, scroll conflicts, error handling, and loading indicator\n\n- Replace ScrollView wrapper with injected JS pull-to-refresh on iOS\n  and native pullToRefreshEnabled on Android to avoid scroll conflicts\n- Add SafeAreaView for iPhone notch/Dynamic Island support\n- Add onError and onHttpError handlers with branded error screen\n- Add ActivityIndicator loading overlay while pages load\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git -C /home/runner/workspace commit -m \"$\\(cat <<''EOF''\nFix SafeArea, scroll conflicts, error handling, and loading indicator\n\n- Replace ScrollView wrapper with injected JS pull-to-refresh on iOS\n  and native pullToRefreshEnabled on Android to avoid scroll conflicts\n- Add SafeAreaView for iPhone notch/Dynamic Island support\n- Add onError and onHttpError handlers with branded error screen\n- Add ActivityIndicator loading overlay while pages load\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "WebSearch",
+      "WebFetch(domain:docs.expo.dev)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(npm info:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(git -C /home/runner/workspace commit -m \"$\\(cat <<''EOF''\nAdd Face ID / biometric authentication for auto-login\n\nOn first login, session cookies are captured via native CookieManager\nand saved to the iOS Keychain / Android Keystore via SecureStore. On\nsubsequent app opens, prompts Face ID \\(or fingerprint on Android\\) and\nrestores cookies to auto-log the user in. WebView is gated until the\nbiometric check completes. Logout clears stored session.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C /home/runner/workspace commit -m \"$\\(cat <<''EOF''\nAdd push notification support with native settings screen\n\n- Register for APNs push notifications on login, unregister on logout\n- Handle notification taps with deep-linking into WebView \\(price alerts → stock page, summaries → news\\)\n- Show foreground notifications as in-app banners\n- Add NotificationSettings modal with toggles for watchlist alerts, price threshold, and market summaries\n- Add floating gear icon for accessing notification preferences when logged in\n- Install expo-notifications and expo-device dependencies\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(npx eas-cli@latest init:*)"
     ]
   }
 }
