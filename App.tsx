@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   BackHandler,
   Platform,
-  RefreshControl,
-  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { WebView, WebViewNavigation } from 'react-native-webview';
+import type { WebViewErrorEvent, WebViewHttpErrorEvent } from 'react-native-webview/lib/WebViewTypes';
 import NetInfo from '@react-native-community/netinfo';
 import * as Linking from 'expo-linking';
 import * as SplashScreen from 'expo-splash-screen';
@@ -24,8 +25,9 @@ export default function App() {
   const webViewRef = useRef<WebView>(null);
   const [canGoBack, setCanGoBack] = useState(false);
   const [isConnected, setIsConnected] = useState<boolean | null>(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [hasLoaded, setHasLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Monitor network connectivity
   useEffect(() => {
@@ -73,20 +75,36 @@ export default function App() {
     return false;
   }, []);
 
-  const onRefresh = useCallback(() => {
-    setRefreshing(true);
-    webViewRef.current?.reload();
+  const onLoadStart = useCallback(() => {
+    setIsLoading(true);
+    setLoadError(null);
   }, []);
 
   const onLoadEnd = useCallback(() => {
-    setRefreshing(false);
+    setIsLoading(false);
     if (!hasLoaded) {
       setHasLoaded(true);
       SplashScreen.hideAsync();
     }
   }, [hasLoaded]);
 
+  const onError = useCallback((event: WebViewErrorEvent) => {
+    setIsLoading(false);
+    setLoadError(event.nativeEvent.description || 'Failed to load page');
+    if (!hasLoaded) {
+      SplashScreen.hideAsync();
+    }
+  }, [hasLoaded]);
+
+  const onHttpError = useCallback((event: WebViewHttpErrorEvent) => {
+    const { statusCode } = event.nativeEvent;
+    if (statusCode >= 500) {
+      setLoadError(`Server error (${statusCode}). Please try again later.`);
+    }
+  }, []);
+
   const retry = useCallback(() => {
+    setLoadError(null);
     NetInfo.fetch().then((state) => {
       setIsConnected(state.isConnected);
       if (state.isConnected) {
@@ -95,59 +113,118 @@ export default function App() {
     });
   }, []);
 
+  // Pull-to-refresh via injected JavaScript (avoids ScrollView/WebView conflict)
+  const pullToRefreshScript = `
+    (function() {
+      if (window.__pullToRefreshInitialized) return;
+      window.__pullToRefreshInitialized = true;
+
+      let startY = 0;
+      let pulling = false;
+
+      document.addEventListener('touchstart', function(e) {
+        if (window.scrollY === 0) {
+          startY = e.touches[0].pageY;
+          pulling = true;
+        }
+      }, { passive: true });
+
+      document.addEventListener('touchmove', function(e) {
+        if (!pulling) return;
+        const diff = e.touches[0].pageY - startY;
+        if (diff > 120 && window.scrollY === 0) {
+          pulling = false;
+          window.ReactNativeWebView.postMessage('__PULL_TO_REFRESH__');
+        }
+      }, { passive: true });
+
+      document.addEventListener('touchend', function() {
+        pulling = false;
+      }, { passive: true });
+    })();
+    true;
+  `;
+
+  const onMessage = useCallback((event: { nativeEvent: { data: string } }) => {
+    if (event.nativeEvent.data === '__PULL_TO_REFRESH__') {
+      webViewRef.current?.reload();
+    }
+  }, []);
+
   // No connection screen
   if (isConnected === false) {
     return (
-      <View style={styles.offlineContainer}>
-        <StatusBar barStyle="light-content" backgroundColor="#000000" />
-        <Text style={styles.offlineEmoji}>📡</Text>
-        <Text style={styles.offlineTitle}>No Connection</Text>
-        <Text style={styles.offlineMessage}>
-          Please check your internet connection and try again.
-        </Text>
-        <TouchableOpacity style={styles.retryButton} onPress={retry}>
-          <Text style={styles.retryText}>Retry</Text>
-        </TouchableOpacity>
-      </View>
+      <SafeAreaProvider>
+        <SafeAreaView style={styles.offlineContainer}>
+          <StatusBar barStyle="light-content" backgroundColor="#000000" />
+          <Text style={styles.offlineEmoji}>📡</Text>
+          <Text style={styles.offlineTitle}>No Connection</Text>
+          <Text style={styles.offlineMessage}>
+            Please check your internet connection and try again.
+          </Text>
+          <TouchableOpacity style={styles.retryButton} onPress={retry}>
+            <Text style={styles.retryText}>Retry</Text>
+          </TouchableOpacity>
+        </SafeAreaView>
+      </SafeAreaProvider>
+    );
+  }
+
+  // WebView error screen
+  if (loadError) {
+    return (
+      <SafeAreaProvider>
+        <SafeAreaView style={styles.offlineContainer}>
+          <StatusBar barStyle="light-content" backgroundColor="#000000" />
+          <Text style={styles.offlineEmoji}>⚠️</Text>
+          <Text style={styles.offlineTitle}>Something Went Wrong</Text>
+          <Text style={styles.offlineMessage}>{loadError}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={retry}>
+            <Text style={styles.retryText}>Retry</Text>
+          </TouchableOpacity>
+        </SafeAreaView>
+      </SafeAreaProvider>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#000000" />
-      <ScrollView
-        contentContainerStyle={styles.scrollContainer}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor="#F97316"
-            colors={['#F97316']}
+    <SafeAreaProvider>
+      <View style={styles.container}>
+        <StatusBar barStyle="light-content" backgroundColor="#000000" />
+        <SafeAreaView style={styles.container} edges={['top']}>
+          <WebView
+            ref={webViewRef}
+            source={{ uri: WEBSITE_URL }}
+            style={styles.webview}
+            onNavigationStateChange={onNavigationStateChange}
+            onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
+            onLoadStart={onLoadStart}
+            onLoadEnd={onLoadEnd}
+            onError={onError}
+            onHttpError={onHttpError}
+            onMessage={onMessage}
+            injectedJavaScript={pullToRefreshScript}
+            // Allow cookies and session storage for auth
+            sharedCookiesEnabled={true}
+            thirdPartyCookiesEnabled={true}
+            domStorageEnabled={true}
+            javaScriptEnabled={true}
+            // Allow media playback
+            allowsInlineMediaPlayback={true}
+            mediaPlaybackRequiresUserAction={false}
+            // Allow back/forward swipe gestures on iOS
+            allowsBackForwardNavigationGestures={true}
+            // Pull-to-refresh on Android (native support)
+            pullToRefreshEnabled={Platform.OS === 'android'}
           />
-        }
-      >
-        <WebView
-          ref={webViewRef}
-          source={{ uri: WEBSITE_URL }}
-          style={styles.webview}
-          onNavigationStateChange={onNavigationStateChange}
-          onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
-          onLoadEnd={onLoadEnd}
-          // Allow cookies and session storage for auth
-          sharedCookiesEnabled={true}
-          thirdPartyCookiesEnabled={true}
-          domStorageEnabled={true}
-          javaScriptEnabled={true}
-          // Allow media playback
-          allowsInlineMediaPlayback={true}
-          mediaPlaybackRequiresUserAction={false}
-          // Allow back/forward swipe gestures on iOS
-          allowsBackForwardNavigationGestures={true}
-          // Start with a black background while loading
-          startInLoadingState={false}
-        />
-      </ScrollView>
-    </View>
+        </SafeAreaView>
+        {isLoading && (
+          <View style={styles.loadingOverlay}>
+            <ActivityIndicator size="large" color="#F97316" />
+          </View>
+        )}
+      </View>
+    </SafeAreaProvider>
   );
 }
 
@@ -156,12 +233,15 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000000',
   },
-  scrollContainer: {
-    flex: 1,
-  },
   webview: {
     flex: 1,
     backgroundColor: '#000000',
+  },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000000',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   offlineContainer: {
     flex: 1,
