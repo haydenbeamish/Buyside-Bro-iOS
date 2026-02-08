@@ -15,11 +15,55 @@ import type { WebViewErrorEvent, WebViewHttpErrorEvent } from 'react-native-webv
 import NetInfo from '@react-native-community/netinfo';
 import * as Linking from 'expo-linking';
 import * as SplashScreen from 'expo-splash-screen';
+import * as LocalAuthentication from 'expo-local-authentication';
+import * as SecureStore from 'expo-secure-store';
+import CookieManager, { type Cookie, type Cookies } from '@preeternal/react-native-cookie-manager';
 
 SplashScreen.preventAutoHideAsync();
 
 const WEBSITE_URL = 'https://www.buysidebro.com';
 const WEBSITE_ORIGIN = 'buysidebro.com';
+const STORE_COOKIES_KEY = 'session_cookies';
+const STORE_BIOMETRIC_KEY = 'biometric_enabled';
+
+// Restore cookies from SecureStore into the native cookie jar
+async function restoreCookies(cookiesJson: string): Promise<boolean> {
+  try {
+    const cookies: Cookies = JSON.parse(cookiesJson);
+    await CookieManager.clearAll(true);
+
+    for (const cookie of Object.values(cookies)) {
+      await CookieManager.set(WEBSITE_URL, {
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain || '.buysidebro.com',
+        path: cookie.path || '/',
+        secure: cookie.secure ?? true,
+        httpOnly: cookie.httpOnly ?? false,
+        ...(cookie.expires ? { expires: cookie.expires } : {}),
+      }, true);
+    }
+
+    if (Platform.OS === 'android') {
+      await CookieManager.flush();
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Check if cookies contain a session (look for common session cookie patterns)
+function hasSessionCookie(cookies: Cookies): boolean {
+  return Object.keys(cookies).some(
+    (name) =>
+      name.includes('session') ||
+      name.includes('sid') ||
+      name.includes('connect') ||
+      name.includes('auth') ||
+      name.includes('token'),
+  );
+}
 
 export default function App() {
   const webViewRef = useRef<WebView>(null);
@@ -28,6 +72,49 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [showWebView, setShowWebView] = useState(false);
+
+  // Biometric initialization — runs once on mount before WebView renders
+  useEffect(() => {
+    (async () => {
+      try {
+        const storedCookies = await SecureStore.getItemAsync(STORE_COOKIES_KEY);
+        const biometricEnabled = await SecureStore.getItemAsync(STORE_BIOMETRIC_KEY);
+
+        // No stored session — fresh user, show WebView for normal login
+        if (!storedCookies || biometricEnabled !== 'true') {
+          setShowWebView(true);
+          return;
+        }
+
+        // Check biometric hardware
+        const hasHardware = await LocalAuthentication.hasHardwareAsync();
+        const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+
+        if (!hasHardware || !isEnrolled) {
+          setShowWebView(true);
+          return;
+        }
+
+        // Prompt Face ID / biometric
+        const result = await LocalAuthentication.authenticateAsync({
+          promptMessage: 'Log in to Buy Side Bro',
+          cancelLabel: 'Use Password',
+          disableDeviceFallback: false,
+          fallbackLabel: 'Use Passcode',
+        });
+
+        if (result.success) {
+          await restoreCookies(storedCookies);
+        }
+        // If biometric fails/cancelled, WebView loads without cookies (manual login)
+      } catch (e) {
+        console.warn('Biometric init error:', e);
+      } finally {
+        setShowWebView(true);
+      }
+    })();
+  }, []);
 
   // Monitor network connectivity
   useEffect(() => {
@@ -52,25 +139,54 @@ export default function App() {
     return () => handler.remove();
   }, [canGoBack]);
 
+  // Save session cookies to SecureStore if user is logged in
+  const saveCookiesIfLoggedIn = useCallback(async () => {
+    try {
+      const cookies = await CookieManager.get(WEBSITE_URL, true);
+
+      if (hasSessionCookie(cookies)) {
+        const json = JSON.stringify(cookies);
+        // SecureStore has a ~2KB limit on some iOS versions
+        if (json.length < 2000) {
+          await SecureStore.setItemAsync(STORE_COOKIES_KEY, json);
+          await SecureStore.setItemAsync(STORE_BIOMETRIC_KEY, 'true');
+        }
+      } else {
+        // No session cookie — user may have logged out, clear stored session
+        const previouslyStored = await SecureStore.getItemAsync(STORE_COOKIES_KEY);
+        if (previouslyStored) {
+          await SecureStore.deleteItemAsync(STORE_COOKIES_KEY);
+          await SecureStore.deleteItemAsync(STORE_BIOMETRIC_KEY);
+        }
+      }
+    } catch (e) {
+      console.warn('Cookie save error:', e);
+    }
+  }, []);
+
   const onNavigationStateChange = useCallback((navState: WebViewNavigation) => {
     setCanGoBack(navState.canGoBack);
+
+    // Detect logout by URL pattern
+    const url = navState.url.toLowerCase();
+    if (url.includes('/logout') || url.includes('/signout') || url.includes('/logged-out')) {
+      SecureStore.deleteItemAsync(STORE_COOKIES_KEY);
+      SecureStore.deleteItemAsync(STORE_BIOMETRIC_KEY);
+    }
   }, []);
 
   // Intercept external links — open in system browser
   const onShouldStartLoadWithRequest = useCallback((request: { url: string }) => {
     const { url } = request;
 
-    // Allow navigations within the main website
     if (url.includes(WEBSITE_ORIGIN)) {
       return true;
     }
 
-    // Allow about:blank and data URIs
     if (url.startsWith('about:') || url.startsWith('data:')) {
       return true;
     }
 
-    // Open external URLs in system browser (Stripe, OAuth, etc.)
     Linking.openURL(url);
     return false;
   }, []);
@@ -80,13 +196,16 @@ export default function App() {
     setLoadError(null);
   }, []);
 
-  const onLoadEnd = useCallback(() => {
+  const onLoadEnd = useCallback(async () => {
     setIsLoading(false);
     if (!hasLoaded) {
       setHasLoaded(true);
       SplashScreen.hideAsync();
     }
-  }, [hasLoaded]);
+
+    // Capture session cookies after each page load
+    await saveCookiesIfLoggedIn();
+  }, [hasLoaded, saveCookiesIfLoggedIn]);
 
   const onError = useCallback((event: WebViewErrorEvent) => {
     setIsLoading(false);
@@ -114,7 +233,7 @@ export default function App() {
   }, []);
 
   // Pull-to-refresh via injected JavaScript (avoids ScrollView/WebView conflict)
-  const pullToRefreshScript = `
+  const injectedScript = `
     (function() {
       if (window.__pullToRefreshInitialized) return;
       window.__pullToRefreshInitialized = true;
@@ -192,33 +311,31 @@ export default function App() {
       <View style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor="#000000" />
         <SafeAreaView style={styles.container} edges={['top']}>
-          <WebView
-            ref={webViewRef}
-            source={{ uri: WEBSITE_URL }}
-            style={styles.webview}
-            onNavigationStateChange={onNavigationStateChange}
-            onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
-            onLoadStart={onLoadStart}
-            onLoadEnd={onLoadEnd}
-            onError={onError}
-            onHttpError={onHttpError}
-            onMessage={onMessage}
-            injectedJavaScript={pullToRefreshScript}
-            // Allow cookies and session storage for auth
-            sharedCookiesEnabled={true}
-            thirdPartyCookiesEnabled={true}
-            domStorageEnabled={true}
-            javaScriptEnabled={true}
-            // Allow media playback
-            allowsInlineMediaPlayback={true}
-            mediaPlaybackRequiresUserAction={false}
-            // Allow back/forward swipe gestures on iOS
-            allowsBackForwardNavigationGestures={true}
-            // Pull-to-refresh on Android (native support)
-            pullToRefreshEnabled={Platform.OS === 'android'}
-          />
+          {showWebView && (
+            <WebView
+              ref={webViewRef}
+              source={{ uri: WEBSITE_URL }}
+              style={styles.webview}
+              onNavigationStateChange={onNavigationStateChange}
+              onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
+              onLoadStart={onLoadStart}
+              onLoadEnd={onLoadEnd}
+              onError={onError}
+              onHttpError={onHttpError}
+              onMessage={onMessage}
+              injectedJavaScript={injectedScript}
+              sharedCookiesEnabled={true}
+              thirdPartyCookiesEnabled={true}
+              domStorageEnabled={true}
+              javaScriptEnabled={true}
+              allowsInlineMediaPlayback={true}
+              mediaPlaybackRequiresUserAction={false}
+              allowsBackForwardNavigationGestures={true}
+              pullToRefreshEnabled={Platform.OS === 'android'}
+            />
+          )}
         </SafeAreaView>
-        {isLoading && (
+        {(isLoading || !showWebView) && (
           <View style={styles.loadingOverlay}>
             <ActivityIndicator size="large" color="#F97316" />
           </View>
