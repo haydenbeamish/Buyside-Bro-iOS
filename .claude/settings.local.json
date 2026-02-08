@@ -68,7 +68,11 @@
       "Bash(git -C /home/runner/workspace remote -v)",
       "Bash(git -C /home/runner/workspace remote add:*)",
       "Bash(git -C /home/runner/workspace push -u origin main)",
-      "Bash(git -C /home/runner/workspace push -u origin main --force)"
+      "Bash(git -C /home/runner/workspace push -u origin main --force)",
+      "Bash(identify:*)",
+      "Bash(file:*)",
+      "Bash(git -C /home/runner/workspace add:*)",
+      "Bash(git -C /home/runner/workspace commit -m \"$\\(cat <<''EOF''\nFix SafeArea, scroll conflicts, error handling, and loading indicator\n\n- Replace ScrollView wrapper with injected JS pull-to-refresh on iOS\n  and native pullToRefreshEnabled on Android to avoid scroll conflicts\n- Add SafeAreaView for iPhone notch/Dynamic Island support\n- Add onError and onHttpError handlers with branded error screen\n- Add ActivityIndicator loading overlay while pages load\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }
